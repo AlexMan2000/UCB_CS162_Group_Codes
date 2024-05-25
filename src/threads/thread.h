@@ -88,10 +88,31 @@ struct thread {
   char name[16];             /* Name (for debugging purposes). */
   uint8_t* stack;            /* Saved stack pointer. */
   int priority;              /* Priority. */
+
+
+  /* For wait() syscall */
+  // 需要一个数据结构维护 当前线程 所在的进程 的 子进程所包含的 所有线程
+  
+  struct thread* parent; // 每个线程只有一个父线程，就是那个调用pthread_create的线程
+  struct list child_threads; // 每个线程有多个子线程
+
+  // The thread struct
+  struct child_entry* child_entry; // 当前线程作为其他线程的子线程时所包含的信息
+
+  // 操作系统中所有的线程(活跃与否)
   struct list_elem allelem;  /* List element for all threads list. */
 
+
+  /*
+    当前线程所属的和该线程状态一致的线程的列表, 如果当前线程是BLOCKED, 那么
+    ，则这个elem是blocked_queue中的一个节点，如果当前线程是READY的，则这个
+    elem是ready_queue中的一个节点。
+  */ 
   /* Shared between thread.c and synch.c. */
   struct list_elem elem; /* List element. */
+
+
+  
 
 #ifdef USERPROG
   /* Owned by process.c. */
@@ -101,6 +122,13 @@ struct thread {
   /* Owned by thread.c. */
   unsigned magic; /* Detects stack overflow. */
 };
+
+
+
+// For project userprog wait() syscall
+struct 
+
+
 
 /* Types of scheduler that the user can request the kernel
  * use to schedule threads at runtime. */

@@ -8,6 +8,7 @@
 int main(int argc, char* argv[]) {
   int i;
 
+  // msg("%d\n", argc);
   test_name = "args";
 
   msg("begin");

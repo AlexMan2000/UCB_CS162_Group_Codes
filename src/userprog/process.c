@@ -20,7 +20,9 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
-static struct semaphore temporary;
+#define ARG_MAX 0x7fffffff
+
+static struct semaphore temporary;  // Used for process_wait()
 static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
@@ -49,7 +51,12 @@ void userprog_init(void) {
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
-   process id, or TID_ERROR if the thread cannot be created. */
+   process id, or TID_ERROR if the thread cannot be created. 
+
+
+   @param file_name: the program(with arguments to be executed), e.g. ls -ahl
+
+   */
 pid_t process_execute(const char* file_name) {
   char* fn_copy;
   tid_t tid;
@@ -60,10 +67,27 @@ pid_t process_execute(const char* file_name) {
   fn_copy = palloc_get_page(0);
   if (fn_copy == NULL)
     return TID_ERROR;
+
   strlcpy(fn_copy, file_name, PGSIZE);
 
+  /* Here file_name is ls -ahl 
+     We need to tokenize it into "ls" and "-ahl"
+     The "ls" will be the first argument for thread_create
+     "ls -ahl" will be fn_copy
+  */
+
+  char* delimiter_pointer;
+  char* executable_name = strtok_r(file_name, " ", delimiter_pointer);
+  // printf("%s", executable_name);
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create(file_name, PRI_DEFAULT, start_process, fn_copy);
+  /* 创建一个新的内核线程
+      1. 创建一个thread_t 结构体
+      2. 分配内核栈
+      3. 将函数start_process作为线程执行函数
+      4. 将线程加入READY队列供CPU调度
+   */
+  tid = thread_create(executable_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page(fn_copy);
   return tid;
@@ -72,14 +96,29 @@ pid_t process_execute(const char* file_name) {
 /* A thread function that loads a user process and starts it
    running. */
 static void start_process(void* file_name_) {
-  char* file_name = (char*)file_name_;
+  
+  char file_name[strlen((char *) file_name_) + 1];
+  strlcpy(file_name, file_name_, strlen((char *) file_name_) + 1);
+
   struct thread* t = thread_current();
   struct intr_frame if_;
   bool success, pcb_success;
 
+
   /* Allocate process control block */
   struct process* new_pcb = malloc(sizeof(struct process));
   success = pcb_success = new_pcb != NULL;
+
+
+  // Parse the filename
+  /* 
+     file_name_: "ls arg1 arg2"
+     we need to parse it into "ls", "arg1 arg2..."
+  */
+
+  char *program_name, *save_ptr;
+  program_name = strtok_r(file_name, " ", &save_ptr); // Remember the & before save_ptr since we are modifying where saveptr points to
+
 
   /* Initialize process control block */
   if (success) {
@@ -99,7 +138,9 @@ static void start_process(void* file_name_) {
     if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
-    success = load(file_name, &if_.eip, &if_.esp);
+    
+    // Load the ELF(executable) into memory and set up the user stack
+    success = load(program_name, &if_.eip, &if_.esp);
   }
 
   /* Handle failure with succesful PCB malloc. Must free the PCB */
@@ -112,8 +153,18 @@ static void start_process(void* file_name_) {
     free(pcb_to_free);
   }
 
+
+   /* If everthing is successful.
+    Continue and push the arguments onto the user stack 
+  */
+  push_arguments(&if_.esp, file_name_);
+
+
+  // printf("STACK SET. ESP: %p\n", if_.esp);
+  // hex_dump((uintptr_t)if_.esp, if_.esp, 100, true);
+
   /* Clean up. Exit on failure or jump to userspace */
-  palloc_free_page(file_name);
+  palloc_free_page(file_name_); // This line will free the file_name, so use it before freeing
   if (!success) {
     sema_up(&temporary);
     thread_exit();
@@ -125,9 +176,75 @@ static void start_process(void* file_name_) {
      arguments on the stack in the form of a `struct intr_frame',
      we just point the stack pointer (%esp) to our stack frame
      and jump to it. */
+
+  // movl %0, %%esp will set the esp to the top of the interrupt frame(edi)
   asm volatile("movl %0, %%esp; jmp intr_exit" : : "g"(&if_) : "memory");
   NOT_REACHED();
 }
+
+
+
+/*
+   @param esp: Pointer to the stack pointer
+   @param argument_string "ls arg1 arg2"
+*/
+void push_arguments(void** esp, char* argument_string) {
+  int argc = 0;
+  int bytes_count = 0;
+  char* token, *save_ptr;
+  char original_string[strlen(argument_string) + 1];
+  strlcpy(original_string, argument_string, strlen(argument_string) + 1);
+
+  for (token = strtok_r(argument_string, " ", &save_ptr);
+        token != NULL;
+        token = strtok_r(NULL, " ", &save_ptr)) {
+      argc++;
+  }
+
+  char** argv_temp[argc];
+  argc = 0;
+   /* Calculate where the top of the stack should be after allocating all the 
+    argument space and alignment.
+  */
+  for (token = strtok_r(original_string, " ", &save_ptr);
+        token != NULL;
+        token = strtok_r(NULL, " ", &save_ptr)) {
+      int bytes_arg = strlen(token) + 1;
+      *esp -= bytes_arg;
+      argv_temp[argc++] = *esp;  // Starting address of the argument string e.g. "arg1" is saved at 0xbffffffde
+      strlcpy(*esp, token, bytes_arg); // strcpy will copy the null terminator at the end
+      bytes_count += bytes_arg;
+  }
+
+  // Stack Align to multiple of 4 bytes
+  // Number of empty bytes to pad
+  int bytes_to_pad = (int) *esp - ((int)*esp & 0xfffffffc);
+  *esp = (void *) ((int) *esp & 0xfffffffc);
+  memset(*esp, 0, bytes_to_pad);
+
+  // Push argv addresses
+  *esp -= 0x4;
+  memset(*esp, 0, 4); // Used to terminate the argv[]
+  for (int i = argc - 1; i >= 0; i--) {
+    *esp -= 0x4;
+    memcpy(*esp, &argv_temp[i], 4);
+  }
+
+  // Push argv
+  void* argv_start = *esp; // An address
+  *esp -= 0x4;
+  memcpy(*esp, &argv_start, 4);
+
+  // Push argc
+  *esp -= 0x4;
+  memcpy(*esp, &argc, 4);
+
+  // Push fake return address, never return actually
+  *esp -= 0x4;
+  memset(*esp, 0x0, 4);
+}
+
+
 
 /* Waits for process with PID child_pid to die and returns its exit status.
    If it was terminated by the kernel (i.e. killed due to an
@@ -142,6 +259,9 @@ int process_wait(pid_t child_pid UNUSED) {
   sema_down(&temporary);
   return 0;
 }
+
+
+
 
 /* Free the current process's resources. */
 void process_exit(void) {
@@ -467,7 +587,7 @@ static bool load_segment(struct file* file, off_t ofs, uint8_t* upage, uint32_t 
    user virtual memory. */
 static bool setup_stack(void** esp) {
   uint8_t* kpage;
-  bool success = false;
+  bool success = false;  
 
   kpage = palloc_get_page(PAL_USER | PAL_ZERO);
   if (kpage != NULL) {
@@ -482,11 +602,15 @@ static bool setup_stack(void** esp) {
 
 /* Adds a mapping from user virtual address UPAGE to kernel
    virtual address KPAGE to the page table.
+
    If WRITABLE is true, the user process may modify the page;
    otherwise, it is read-only.
+
    UPAGE must not already be mapped.
+
    KPAGE should probably be a page obtained from the user pool
    with palloc_get_page().
+
    Returns true on success, false if UPAGE is already mapped or
    if memory allocation fails. */
 static bool install_page(void* upage, void* kpage, bool writable) {

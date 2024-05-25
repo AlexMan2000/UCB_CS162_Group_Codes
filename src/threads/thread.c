@@ -172,7 +172,13 @@ void thread_print_stats(void) {
 
    The code provided sets the new thread's `priority' member to
    PRIORITY, but no actual priority scheduling is implemented.
-   Priority scheduling is the goal of Problem 1-3. */
+   Priority scheduling is the goal of Problem 1-3. 
+
+  @param name: name of the thread
+  @param priority: 
+  @param function: thread function
+  @param aux: args for thread function.
+   */
 tid_t thread_create(const char* name, int priority, thread_func* function, void* aux) {
   struct thread* t;
   struct kernel_thread_frame* kf;
@@ -183,16 +189,17 @@ tid_t thread_create(const char* name, int priority, thread_func* function, void*
   ASSERT(function != NULL);
 
   /* Allocate thread. */
-  t = palloc_get_page(PAL_ZERO);
+  t = palloc_get_page(PAL_ZERO);  /* Allocating one page(4KB) OF zeros for kernel thread */  
   if (t == NULL)
     return TID_ERROR;
 
   /* Initialize thread. */
-  init_thread(t, name, priority);
-  tid = t->tid = allocate_tid();
+  init_thread(t, name, priority); /* Initialize thread structure, the bottom size(thread_t) 
+  bytes of the kernel stack would be for structure thread  */
+  tid = t->tid = allocate_tid(); /* Name the thread with tid, unique for each thread */
 
   /* Stack frame for kernel_thread(). */
-  kf = alloc_frame(t, sizeof *kf);
+  kf = alloc_frame(t, sizeof *kf);  /* allocate the stack frame (top 4KB - size(thread_t) bytes) */
   kf->eip = NULL;
   kf->function = function;
   kf->aux = aux;
@@ -205,6 +212,36 @@ tid_t thread_create(const char* name, int priority, thread_func* function, void*
   sf = alloc_frame(t, sizeof *sf);
   sf->eip = switch_entry;
   sf->ebp = 0;
+
+  /*
+    4 kB     +---------------------------------+  <-----------   t -> stack
+             |           kf -> aux             |  kernel_thread_frame
+             |           kf -> function        |
+             |           kf -> eip             |
+             +---------------------------------+
+             |       switch_entry_frame        |
+             +---------------------------------+
+             |       switch_threads_frame      |
+             +---------------------------------+
+             |         grows downward          |
+             |                                 |
+             |                                 |
+             |                                 |
+             |                                 |
+             |                                 |
+             |                                 |
+             |                                 |
+             |                                 |
+             +---------------------------------+      sizeof(thread_t)
+             |              magic              |
+             |                :                |
+             |                :                |
+             |               name              |
+             |              status             |
+        0 kB +---------------------------------+ <-----------   t = palloc_get_page()
+  
+  */
+
 
   /* Add to run queue. */
   thread_unblock(t);
@@ -426,7 +463,7 @@ static void init_thread(struct thread* t, const char* name, int priority) {
   memset(t, 0, sizeof *t);
   t->status = THREAD_BLOCKED;
   strlcpy(t->name, name, sizeof t->name);
-  t->stack = (uint8_t*)t + PGSIZE;
+  t->stack = (uint8_t*)t + PGSIZE;  /* t->stack will point to the top of the kernel thread execution stack */
   t->priority = priority;
   t->pcb = NULL;
   t->magic = THREAD_MAGIC;

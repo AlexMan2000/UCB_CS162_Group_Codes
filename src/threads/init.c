@@ -80,7 +80,9 @@ int main(void) {
   /* Clear BSS. */
   bss_init();
 
-  /* Break command line into arguments and parse options. */
+  /* Break command line into arguments and parse options.
+    This is not user program arguments, it's used for Pintos start up
+   */
   argv = read_command_line();
   argv = parse_options(argv);
 
